@@ -72,20 +72,25 @@ fun SketchbookApp() {
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
+    // Drawing State
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
     val screenWidth = with(density) { configuration.screenWidthDp.dp.toPx().toInt() }
     val screenHeight = with(density) { configuration.screenHeightDp.dp.toPx().toInt() }
 
-    val canvasBitmap = remember {
-        ImageBitmap(screenWidth, screenHeight, ImageBitmapConfig.Argb8888)
-    }
-    val canvasObj = remember { androidx.compose.ui.graphics.Canvas(canvasBitmap) }
+    // We store strokes as data to allow "AI" manipulation (smoothing/styling)
+    data class Stroke(
+        val points: List<Offset>,
+        val color: Color,
+        val width: Float,
+        val isNeon: Boolean = false
+    )
 
+    val strokes = remember { mutableStateListOf<Stroke>() }
     val currentPathPoints = remember { mutableStateListOf<Offset>() }
+    
     var currentColor by remember { mutableStateOf(Color.White) }
     var currentStrokeWidth by remember { mutableStateOf(10f) }
-    var bitmapTrigger by remember { mutableStateOf(0) }
 
     var showSettingsMenu by remember { mutableStateOf(false) }
     var showPenSettings by remember { mutableStateOf(false) }
@@ -111,6 +116,80 @@ fun SketchbookApp() {
         }
     )
 
+    // Helper to smooth lines (Simple averaging "AI")
+    fun smoothPoints(points: List<Offset>): List<Offset> {
+        if (points.size < 3) return points
+        val smoothed = mutableListOf<Offset>()
+        smoothed.add(points.first())
+        for (i in 1 until points.size - 1) {
+            val prev = points[i - 1]
+            val curr = points[i]
+            val next = points[i + 1]
+            // Average neighbors
+            smoothed.add(
+                Offset(
+                    (prev.x + curr.x + next.x) / 3f,
+                    (prev.y + curr.y + next.y) / 3f
+                )
+            )
+        }
+        smoothed.add(points.last())
+        return smoothed
+    }
+
+    // Helper to connect gaps between strokes ("Shape Recognition" helper)
+    fun connectGaps(strokes: List<Stroke>): List<Stroke> {
+        val threshold = 60f // Distance threshold to snap points
+        // Create mutable copies of points so we can modify them
+        val mutableStrokesPoints = strokes.map { it.points.toMutableList() }
+
+        for (i in mutableStrokesPoints.indices) {
+            val pointsA = mutableStrokesPoints[i]
+            if (pointsA.isEmpty()) continue
+
+            for (j in i + 1 until mutableStrokesPoints.size) {
+                val pointsB = mutableStrokesPoints[j]
+                if (pointsB.isEmpty()) continue
+
+                val headA = pointsA.first()
+                val tailA = pointsA.last()
+                val headB = pointsB.first()
+                val tailB = pointsB.last()
+
+                // Check 4 combinations of endpoints
+                // Tail A -> Head B
+                if ((tailA - headB).getDistance() < threshold) {
+                    val mid = (tailA + headB) / 2f
+                    pointsA[pointsA.lastIndex] = mid
+                    pointsB[0] = mid
+                }
+                // Tail A -> Tail B
+                if ((tailA - tailB).getDistance() < threshold) {
+                    val mid = (tailA + tailB) / 2f
+                    pointsA[pointsA.lastIndex] = mid
+                    pointsB[pointsB.lastIndex] = mid
+                }
+                // Head A -> Head B
+                if ((headA - headB).getDistance() < threshold) {
+                    val mid = (headA + headB) / 2f
+                    pointsA[0] = mid
+                    pointsB[0] = mid
+                }
+                // Head A -> Tail B
+                if ((headA - tailB).getDistance() < threshold) {
+                    val mid = (headA + tailB) / 2f
+                    pointsA[0] = mid
+                    pointsB[pointsB.lastIndex] = mid
+                }
+            }
+        }
+
+        // Return new strokes with modified points
+        return strokes.zip(mutableStrokesPoints) { stroke, newPoints ->
+            stroke.copy(points = newPoints)
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -125,36 +204,28 @@ fun SketchbookApp() {
                             onDismissRequest = { showSettingsMenu = false }
                         ) {
                             DropdownMenuItem(
-                                text = { Text("AI Magic (Gemini Nano)") },
+                                text = { Text("AI Magic: Connect & Glow") },
                                 onClick = {
                                     showSettingsMenu = false
                                     scope.launch {
                                         isProcessingAi = true
-                                        delay(1500)
-                                        // Enhanced AI Magic: Apply a strong "Neon Glow" effect
-                                        // We draw a semi-transparent black layer to darken, then draw random neon lines
-                                        val paint = Paint().apply {
-                                            color = Color.Black.copy(alpha = 0.3f)
-                                            blendMode = BlendMode.Darken
+                                        delay(1000) // Simulate "Thinking"
+                                        
+                                        // 1. Connect Gaps (Shape Recognition)
+                                        val connectedStrokes = connectGaps(strokes)
+                                        
+                                        // 2. Smooth & Neonify
+                                        val enhancedStrokes = connectedStrokes.map { stroke ->
+                                            stroke.copy(
+                                                points = smoothPoints(stroke.points),
+                                                color = Color.Cyan, // Cyberpunk Neon
+                                                width = stroke.width * 0.8f, // Refine width
+                                                isNeon = true
+                                            )
                                         }
-                                        canvasObj.drawRect(
-                                            0f, 0f, screenWidth.toFloat(), screenHeight.toFloat(), paint
-                                        )
-
-                                        // Simulate "AI Hallucination" by adding some random neon sparkles
-                                        val sparklePaint = Paint().apply {
-                                            strokeWidth = 5f
-                                            style = PaintingStyle.Fill
-                                            color = Color.Cyan
-                                            blendMode = BlendMode.Screen
-                                        }
-                                        repeat(20) {
-                                            val x = (Math.random() * screenWidth).toFloat()
-                                            val y = (Math.random() * screenHeight).toFloat()
-                                            canvasObj.drawCircle(Offset(x, y), 5f, sparklePaint)
-                                        }
-
-                                        bitmapTrigger++
+                                        strokes.clear()
+                                        strokes.addAll(enhancedStrokes)
+                                        
                                         isProcessingAi = false
                                     }
                                 }
@@ -186,11 +257,7 @@ fun SketchbookApp() {
             ) {
                 FloatingActionButton(
                     onClick = {
-                        canvasObj.nativeCanvas.drawColor(
-                            android.graphics.Color.TRANSPARENT,
-                            android.graphics.PorterDuff.Mode.CLEAR
-                        )
-                        bitmapTrigger++
+                        strokes.clear()
                     },
                     containerColor = MaterialTheme.colorScheme.error
                 ) {
@@ -237,33 +304,53 @@ fun SketchbookApp() {
                             },
                             onDragEnd = {
                                 if (currentPathPoints.isNotEmpty()) {
-                                    val path = Path().apply {
-                                        moveTo(currentPathPoints.first().x, currentPathPoints.first().y)
-                                        currentPathPoints.drop(1).forEach { lineTo(it.x, it.y) }
-                                    }
-
-                                    val paint = Paint().apply {
-                                        color = currentColor
-                                        strokeWidth = currentStrokeWidth
-                                        style = PaintingStyle.Stroke
-                                        strokeCap = StrokeCap.Round
-                                        strokeJoin = StrokeJoin.Round
-                                    }
-
-                                    canvasObj.drawPath(path, paint)
-                                    bitmapTrigger++
+                                    strokes.add(
+                                        Stroke(
+                                            points = currentPathPoints.toList(),
+                                            color = currentColor,
+                                            width = currentStrokeWidth
+                                        )
+                                    )
                                     currentPathPoints.clear()
                                 }
                             }
                         )
                     }
             ) {
-                // Draw cached bitmap
-                bitmapTrigger.let {
-                    drawImage(canvasBitmap)
+                // Draw all recorded strokes
+                strokes.forEach { stroke ->
+                    val path = Path().apply {
+                        if (stroke.points.isNotEmpty()) {
+                            moveTo(stroke.points.first().x, stroke.points.first().y)
+                            stroke.points.drop(1).forEach { lineTo(it.x, it.y) }
+                        }
+                    }
+                    
+                    // If "Neon" (AI Enhanced), draw a glow effect
+                    if (stroke.isNeon) {
+                        drawPath(
+                            path = path,
+                            color = stroke.color.copy(alpha = 0.5f),
+                            style = Stroke(
+                                width = stroke.width * 2.5f,
+                                cap = StrokeCap.Round,
+                                join = StrokeJoin.Round
+                            )
+                        )
+                    }
+
+                    drawPath(
+                        path = path,
+                        color = stroke.color,
+                        style = Stroke(
+                            width = stroke.width,
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round
+                        )
+                    )
                 }
 
-                // Draw active path
+                // Draw active path (currently being drawn)
                 if (currentPathPoints.isNotEmpty()) {
                     val path = Path().apply {
                         moveTo(currentPathPoints.first().x, currentPathPoints.first().y)
@@ -286,13 +373,22 @@ fun SketchbookApp() {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.5f)),
+                        .background(Color.Black.copy(alpha = 0.7f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                        CircularProgressIndicator(color = Color.Cyan)
                         Spacer(modifier = Modifier.height(16.dp))
-                        Text("Gemini Nano is dreaming...", color = Color.White)
+                        Text(
+                            "Gemini Nano is connecting the dots...", 
+                            color = Color.Cyan,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            "(Sketch-to-Image requires Cloud API)", 
+                            color = Color.White.copy(alpha = 0.5f),
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
             }
@@ -353,7 +449,7 @@ fun SketchbookApp() {
                                 )
                             }
                         }
-
+                        
                         Spacer(modifier = Modifier.height(16.dp))
                         Text("Custom Color Wheel")
                         Box(
@@ -364,10 +460,11 @@ fun SketchbookApp() {
                         ) {
                             ColorWheel(
                                 modifier = Modifier.size(200.dp),
+                                selectedColor = currentColor,
                                 onColorSelected = { currentColor = it }
                             )
                         }
-
+                        
                         Spacer(modifier = Modifier.height(32.dp))
                     }
                 }
@@ -379,6 +476,7 @@ fun SketchbookApp() {
 @Composable
 fun ColorWheel(
     modifier: Modifier = Modifier,
+    selectedColor: Color,
     onColorSelected: (Color) -> Unit
 ) {
     Canvas(
@@ -443,6 +541,33 @@ fun ColorWheel(
             ),
             radius = radius,
             center = center
+        )
+        
+        // Draw selection indicator
+        // Convert selectedColor to HSV to find position
+        val hsv = FloatArray(3)
+        android.graphics.Color.colorToHSV(selectedColor.toArgb(), hsv)
+        val hue = hsv[0]
+        val saturation = hsv[1]
+        
+        // Calculate position from HSV
+        // Angle in radians
+        val angleRad = Math.toRadians(hue.toDouble())
+        val dist = saturation * radius
+        val x = center.x + dist * kotlin.math.cos(angleRad)
+        val y = center.y + dist * kotlin.math.sin(angleRad)
+        
+        // Draw indicator circle
+        drawCircle(
+            color = Color.White,
+            radius = 8.dp.toPx(),
+            center = Offset(x.toFloat(), y.toFloat()),
+            style = Stroke(width = 2.dp.toPx())
+        )
+        drawCircle(
+            color = selectedColor,
+            radius = 6.dp.toPx(),
+            center = Offset(x.toFloat(), y.toFloat())
         )
     }
 }
